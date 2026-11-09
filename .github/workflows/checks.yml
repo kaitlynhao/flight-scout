@@ -1,0 +1,60 @@
+# Flight Scout's automatic checks. Runs on GitHub's computers, so your laptop can be off.
+#
+# To PAUSE it (save searches): GitHub repo -> Actions -> "Flight Scout checks" -> "..." -> Disable workflow.
+# To RUN IT NOW (demo):        GitHub repo -> Actions -> "Flight Scout checks" -> "Run workflow".
+name: Flight Scout checks
+
+on:
+  schedule:
+    # Every 3 hours, 6 AM to midnight Eastern: 6a 9a 12p 3p 6p 9p 12a.
+    # GitHub uses UTC. These times are for Eastern STANDARD time (Nov-Mar, UTC-5);
+    # during daylight time (Mar-Nov) every check runs 1 hour later in Eastern time.
+    # GitHub may start scheduled runs a few minutes late.
+    - cron: "0 11,14,17,20,23,2,5 * * *"
+  workflow_dispatch:
+    inputs:
+      report:
+        description: "Also send a report now"
+        type: boolean
+        default: true
+      reset_alerts:
+        description: "Forget past alerts so they fire again (handy for demos)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write   # lets the run save its alert memory back to the repo
+
+concurrency: flight-scout   # never run two checks at the same time
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install libraries
+        run: pip install -r requirements-checks.txt
+
+      - name: Forget past alerts
+        if: ${{ inputs.reset_alerts }}
+        run: rm -f alert_state.json
+
+      - name: Check prices and notify
+        env:
+          SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}   # stored in GitHub Secrets, never in the code
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          MONTHLY_SEARCH_LIMIT: "900"
+        run: python run_checks.py ${{ inputs.report && '--report' || '' }}
+
+      - name: Save alert memory
+        run: |
+          git config user.name "flight-scout-bot"
+          git config user.email "flight-scout-bot@users.noreply.github.com"
+          git add alert_state.json
+          git diff --cached --quiet || (git commit -m "Update alert memory" && git push)

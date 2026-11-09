@@ -1,0 +1,17 @@
+{
+  "trips": [
+    {
+      "id": "jfk-lax-dec10",
+      "active": true,
+      "trip": {"origin": "JFK", "destination": "LAX", "depart_date": "2026-12-10",
+               "return_date": "2026-12-17", "adults": 1, "cabin": "economy"},
+      "prefs": {
+        "max_price": 450, "price_leeway": 50, "target_price": 375, "great_score": 90,
+        "max_hours": 7, "time_leeway_min": 30, "max_stops": 1,
+        "outbound_window": ["06:00", "22:00"], "return_window": null, "window_leeway_min": 30,
+        "price_importance": 3, "time_importance": 3, "stops_importance": 3,
+        "allow_separate": true
+      }
+    }
+  ]
+}

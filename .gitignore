@@ -1,0 +1,8 @@
+# Never upload secrets or local-only files to GitHub
+.env
+.venv/
+.venv.nosync/
+.streamlit/secrets.toml
+__pycache__/
+.DS_Store
+.claude/
