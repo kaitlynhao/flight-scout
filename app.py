@@ -73,6 +73,36 @@ def save_watchlist(data):
         json.dump(data, fh, indent=2)
 
 
+def sync_watchlist(change):
+    """Upload the tracked-trips list to GitHub, where the automatic checks read it.
+    Returns (worked, message). If it fails (no internet etc.), the trip stays saved on this laptop."""
+    import subprocess
+
+    def git(*args):
+        return subprocess.run(["git", "-c", "user.name=Kaitlyn Hao", "-c", "user.email=kaitlynhao@gmail.com", *args],
+                              cwd=HERE, capture_output=True, text=True, timeout=45)
+    try:
+        git("add", "watchlist.json")
+        if git("diff", "--cached", "--quiet").returncode == 0:
+            return True, "Already up to date on GitHub."
+        git("commit", "-m", f"Tracked trips: {change}")
+        pull = git("pull", "--rebase", "--autostash")   # get the latest alert memory from the scheduled runs
+        if pull.returncode != 0:
+            git("rebase", "--abort")
+            return False, "Saved on this laptop, but couldn't reach GitHub. Try again in a minute."
+        push = git("push")
+        if push.returncode != 0:
+            return False, "Saved on this laptop, but the upload to GitHub didn't go through."
+        return True, "Synced to GitHub."
+    except Exception:
+        return False, "Saved on this laptop, but couldn't reach GitHub."
+
+
+def flash(worked, text):
+    """Show a message after the page refreshes."""
+    st.session_state.wl_flash = ("success" if worked else "warning", text)
+
+
 def t2s(t):
     return t.strftime("%H:%M")
 
@@ -205,6 +235,9 @@ LIMIT_MESSAGE = "Flight Scout can't search right now. Please try again later."
 # ---------- sidebar: tracked trips ----------
 with st.sidebar:
     st.subheader("Tracked trips")
+    if st.session_state.get("wl_flash"):
+        kind, text = st.session_state.pop("wl_flash")
+        (st.success if kind == "success" else st.warning)(text)
     wl = load_watchlist()
     if not wl["trips"]:
         st.caption("Nothing tracked yet. Search a trip, then press **Track this trip**.")
@@ -218,6 +251,9 @@ with st.sidebar:
         if c2.button("✕", key=f"rm_{w['id']}", help="Stop tracking"):
             wl["trips"] = [x for x in wl["trips"] if x["id"] != w["id"]]
             save_watchlist(wl)
+            with st.spinner("Updating GitHub..."):
+                worked, msg = sync_watchlist(f"stop tracking {t['origin']}-{t['destination']}")
+            flash(worked, "Stopped tracking. " + ("Automatic checks will skip it now." if worked else msg))
             st.rerun()
     st.caption("Checks run every 3 hours, 6 AM–midnight ET. Reports at 9 AM and 6 PM.")
 
@@ -359,7 +395,9 @@ if c2.button("📌 Track this trip", use_container_width=True):
     wl["trips"].append({"id": f"{t['origin']}-{t['destination']}-{uuid.uuid4().hex[:6]}".lower(),
                         "active": True, "trip": t, "prefs": result["prefs"]})
     save_watchlist(wl)
-    st.toast("Tracking! You'll get it in your reports and alerts.", icon="📌")
+    with st.spinner("Saving and syncing to GitHub..."):
+        worked, msg = sync_watchlist(f"track {t['origin']}-{t['destination']} {t['depart_date']}")
+    flash(worked, "📌 Tracking! " + ("Your reports and alerts will include it." if worked else msg))
     st.rerun()
 
 if not result["cards"]:
