@@ -546,19 +546,29 @@ for i, card in enumerate(cards, 1):
         outs = sorted({p["out"]["depart"]: p["out"] for p in card["pairs"]}.items())
         out_flights = [f for _, f in outs]
         unchecked = sorted(card.get("other_departures", []), key=lambda f: f["depart"])
-        st.markdown(f"**Departure:** {day(first['out']['depart']) + ' · ' if SHOW_DATES else ''}{leg(first['out'])}")
+        # Departure-time buttons: every time listed has the same airline, stops and price as this card
+        options = {tclock(f["depart"]): f for f in out_flights}
+        options.update({tclock(f["depart"]) + " *": f for f in unchecked})
+        pick_key = f"pick_{rid}_{i}"
+        chosen = options.get(st.session_state.get(pick_key) or list(options)[0], out_flights[0])
+
+        def times(f):
+            arrive = f" → {tclock(f['arrive'])}" if f.get("arrive") else ""
+            return f"{tclock(f['depart'])}{arrive}"
+
+        when = lambda f: day(f["depart"]) + " · " if SHOW_DATES else ""
+        st.markdown(f"**Departure:** {when(chosen)}**{times(chosen)}** · {leg(chosen)}")
         if card["round_trip"]:
             backs = sorted({r["depart"]: r for p in card["pairs"] for r in p["returns"]}.items())
-            st.markdown(f"**Return:** {day(first['returns'][0]['depart']) + ' · ' if SHOW_DATES else ''}{leg(first['returns'][0])} — leaves "
-                        + " or ".join(tclock(d) for d, _ in backs))
-            # Tap a departure time to see its best returns
-            options = {tclock(f["depart"]): f for f in out_flights}
-            options.update({tclock(f["depart"]) + " *": f for f in unchecked})
-            pick = st.pills("Departure times (tap one to see its returns)", list(options),
-                            key=f"pick_{rid}_{i}", default=list(options)[0])
+            back = first["returns"][0]
+            back_times = " or ".join(f"**{tclock(d)}**" for d, _ in backs)
+            st.markdown(f"**Return:** {when(back)}leaves {back_times} · {leg(back)}")
+            if len(options) > 1:
+                st.pills(f"{len(options)} departure times at this price on {', '.join(chosen['airlines'])} "
+                         "(tap one to see its returns)", list(options), key=pick_key, default=list(options)[0])
             if unchecked:
-                st.caption("\\* round-trip ticket price not checked yet for these times (same listed price)")
-            chosen = options.get(pick or list(options)[0])
+                st.caption("\\* Same airline, stops and listed price, but the round-trip ticket price for that exact "
+                           "time hasn't been checked yet. Tap it to see its returns.")
             with st.expander(f"More returns for the {clock(chosen['depart'])} flight"):
                 table = returns_table(chosen)
                 limit = len(table) if st.checkbox("Show all", key=f"all_{rid}_{i}") else scout.MORE_RETURNS + 1
@@ -580,8 +590,9 @@ for i, card in enumerate(cards, 1):
                         st.error(st.session_state[f"chk_err_{rid}_{i}"])
                 elif scout.round_trip_checked(result, chosen):
                     st.caption("✓ Round-trip ticket prices checked for this time.")
-        else:
-            st.markdown("**Leaves at:** " + " or ".join(tclock(f["depart"]) for f in out_flights))
+        elif len(out_flights) > 1:
+            st.markdown("**Same price, also leaves at:** "
+                        + " or ".join(tclock(f["depart"]) for f in out_flights if f is not chosen))
 
         with st.expander("Why this score?"):
             for r in card["reasons"]:
