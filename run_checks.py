@@ -132,7 +132,8 @@ def main():
         try:
             result = find_trips(w["trip"], w["prefs"])
         except BudgetError as e:
-            errors.append(f"Skipped {trip_title(w['trip'])}: {e}")
+            print(f"Budget limit: {e}")  # details stay in the run log only
+            errors.append(f"Skipped {trip_title(w['trip'])}: Flight Scout has paused checks for now.")
             continue
         except Exception as e:  # one broken trip shouldn't stop the others
             errors.append(f"Couldn't check {trip_title(w['trip'])}: {e}")

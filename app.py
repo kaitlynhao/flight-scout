@@ -11,10 +11,9 @@ from datetime import date, time, timedelta
 import pandas as pd
 import streamlit as st
 
-import flights
 import scout
 from scoring import DEFAULT_PREFS, PRIORITY_PRESETS, category_points
-from usage import BudgetError, DEFAULT_MONTHLY_LIMIT, get_usage
+from usage import BudgetError
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WATCHLIST = os.path.join(HERE, "watchlist.json")
@@ -95,7 +94,6 @@ DEFAULTS = {
 }
 for k, v in DEFAULTS.items():
     st.session_state.setdefault(k, v)
-st.session_state.setdefault("searches_session", 0)
 
 
 def apply_preset():
@@ -201,18 +199,11 @@ def current_prefs(round_trip):
     }
 
 
-# ---------- sidebar: usage + tracked trips ----------
-with st.sidebar:
-    st.subheader("Search budget")
-    try:
-        u = get_usage()
-        st.progress(min(u["used"] / DEFAULT_MONTHLY_LIMIT, 1.0),
-                    text=f"{u['used']} of {DEFAULT_MONTHLY_LIMIT} used this month")
-        st.caption(f"SerpApi's count can lag a few minutes. Resets {u['renews']}.")
-    except Exception:
-        st.caption("Couldn't reach SerpApi to check usage.")
-    st.caption(f"This session: {st.session_state.searches_session} searches")
+# Shown when the (behind-the-scenes) monthly search limit is reached - no numbers for the user.
+LIMIT_MESSAGE = "Flight Scout can't search right now. Please try again later."
 
+# ---------- sidebar: tracked trips ----------
+with st.sidebar:
     st.subheader("Tracked trips")
     wl = load_watchlist()
     if not wl["trips"]:
@@ -266,7 +257,7 @@ with tab_words:
                              "no red-eyes, and one short stop is fine.",
                  key="ai_text", height=110)
     st.button("✨ Fill in my settings", on_click=ai_fill, type="primary")
-    st.caption("An AI model (Google Gemini) reads your words and fills in the settings. It costs no flight searches. "
+    st.caption("An AI model (Google Gemini) reads your words and fills in the settings. "
                "The scoring itself stays rule-based, so every score still comes with reasons.")
     if st.session_state.get("ai_error"):
         st.error(st.session_state.ai_error)
@@ -330,28 +321,27 @@ trip = {"depart_flex": st.session_state.t_dflex, "return_flex": st.session_state
 
 # ---------- search ----------
 st.subheader("3. Search")
-cost = scout.estimate_searches(trip)
 ok = len(origin) == 3 and len(destination) == 3 and origin != destination
-if st.button(f"🔎 Search flights  ·  uses {cost} search{'es' if cost > 1 else ''}", type="primary",
-             disabled=not ok, use_container_width=True):
-    before = flights.searches_this_run
+if st.button("🔎 Search flights", type="primary", disabled=not ok, use_container_width=True):
+    st.session_state.search_error = None
     with st.spinner("Searching Google Flights and scoring every option..."):
         try:
             st.session_state.result = scout.find_trips(trip, prefs)
             st.session_state.result_id = uuid.uuid4().hex[:6]
             st.session_state.searched_trip = trip
-        except BudgetError as e:
-            st.error(str(e))
+        except BudgetError:
+            st.session_state.search_error = LIMIT_MESSAGE
         except Exception as e:
-            st.error(f"Search failed: {e}")
-    st.session_state.searches_session += flights.searches_this_run - before
+            st.session_state.search_error = f"Search failed: {e}"
     st.rerun()
+if st.session_state.get("search_error"):
+    st.error(st.session_state.search_error)
 
 result = st.session_state.get("result")
 if not result:
     st.stop()
 
-# Preferences changed since the search? Re-score for free with the flights we already have.
+# Preferences changed since the search? Re-score with the flights we already have (no new searches).
 scout.rescore(result, current_prefs(result["round_trip"]))
 rid = st.session_state.result_id
 t = st.session_state.searched_trip
@@ -363,7 +353,7 @@ arrow = "⇄" if t.get("return_date") else "→"
 st.subheader(f"{t['origin']} {arrow} {t['destination']}")
 c1, c2 = st.columns([3, 1])
 c1.caption(f"{len(result['trips'])} options fit your limits · {len(result['hidden'])} hidden (beyond your leniency) · "
-           "change any setting above to re-score for free")
+           "change any setting above and results update instantly")
 if c2.button("📌 Track this trip", use_container_width=True):
     wl = load_watchlist()
     wl["trips"].append({"id": f"{t['origin']}-{t['destination']}-{uuid.uuid4().hex[:6]}".lower(),
@@ -424,14 +414,18 @@ for i, card in enumerate(cards, 1):
                 st.dataframe(table.head(limit), hide_index=True, use_container_width=True)
                 if not scout.round_trip_checked(result, chosen) and any(
                         scout._id(f) == scout._id(chosen) for f in result["rt_out"]):
-                    if st.button(f"Check round-trip ticket prices for {clock(chosen['depart'])} · uses 1 search",
+                    if st.button(f"Check round-trip ticket prices for {clock(chosen['depart'])}",
                                  key=f"chk_{rid}_{i}"):
                         try:
-                            used = scout.check_round_trip_prices(result, chosen)
-                            st.session_state.searches_session += used
-                        except (BudgetError, ValueError) as e:
-                            st.error(str(e))
+                            scout.check_round_trip_prices(result, chosen)
+                            st.session_state.pop(f"chk_err_{rid}_{i}", None)
+                        except BudgetError:
+                            st.session_state[f"chk_err_{rid}_{i}"] = LIMIT_MESSAGE
+                        except ValueError as e:
+                            st.session_state[f"chk_err_{rid}_{i}"] = str(e)
                         st.rerun()
+                    if st.session_state.get(f"chk_err_{rid}_{i}"):
+                        st.error(st.session_state[f"chk_err_{rid}_{i}"])
                 elif scout.round_trip_checked(result, chosen):
                     st.caption("✓ Round-trip ticket prices checked for this time.")
         else:
