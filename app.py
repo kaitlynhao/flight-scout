@@ -529,6 +529,19 @@ show_all = st.session_state.get(f"more_{rid}", False)
 cards = scout.pick_top(result, len(result["cards"]) if show_all else scout.SHOW_TOP_WEB)
 
 
+def span(f):
+    """Takeoff → landing, e.g. '1:30 PM → 9:52 PM' (marks landing the next day with +1 day)."""
+    text = tclock(f["depart"])
+    if f.get("arrive"):
+        text += f" → {tclock(f['arrive'])}"
+        if f["arrive"][:10] > f["depart"][:10]:
+            text += " (+1 day)"
+    return text
+
+
+RETURNS_SHOWN = 5  # "More returns": rows shown at first; "Show 5 more" adds 5 at a time
+
+
 def returns_table(out_flight):
     rows = scout.returns_for_departure(result, out_flight)
     data = []
@@ -536,7 +549,7 @@ def returns_table(out_flight):
         tr = r["trip"]
         back = tr["legs"][1]
         vs = "best return" if r["is_best"] else scout._diff_text(r).replace(" vs best return", "")
-        data.append({"Return": clock(back["depart"]), "Flight": leg(back), "Ticket": TICKET[tr["ticket"]],
+        data.append({"Return": (day(back["depart"]) + ", " if SHOW_DATES else "") + span(back), "Flight": leg(back), "Ticket": TICKET[tr["ticket"]],
                      "Score": tr["score"], "Price": f"${tr['price']}", "vs. best": vs})
     return pd.DataFrame(data)
 
@@ -557,17 +570,13 @@ for i, card in enumerate(cards, 1):
         pick_key = f"pick_{rid}_{i}"
         chosen = options.get(st.session_state.get(pick_key) or list(options)[0], out_flights[0])
 
-        def times(f):
-            arrive = f" → {tclock(f['arrive'])}" if f.get("arrive") else ""
-            return f"{tclock(f['depart'])}{arrive}"
-
         when = lambda f: day(f["depart"]) + " · " if SHOW_DATES else ""
-        st.markdown(f"**Departure:** {when(chosen)}**{times(chosen)}** · {leg(chosen)}")
+        st.markdown(f"**Departure:** {when(chosen)}**{span(chosen)}** · {leg(chosen)}")
         if card["round_trip"]:
             backs = sorted({r["depart"]: r for p in card["pairs"] for r in p["returns"]}.items())
             back = first["returns"][0]
-            back_times = " or ".join(f"**{tclock(d)}**" for d, _ in backs)
-            st.markdown(f"**Return:** {when(back)}leaves {back_times} · {leg(back)}")
+            back_times = " or ".join(f"**{span(r)}**" for _, r in backs)
+            st.markdown(f"**Return:** {when(back)}{back_times} · {leg(back)}")
             if len(options) > 1:
                 st.pills(f"{len(options)} departure times at this price on {', '.join(chosen['airlines'])} "
                          "(tap one to see its returns)", list(options), key=pick_key, default=list(options)[0])
@@ -576,8 +585,18 @@ for i, card in enumerate(cards, 1):
                            "time hasn't been checked yet. Tap it to see its returns.")
             with st.expander(f"More returns for the {clock(chosen['depart'])} flight"):
                 table = returns_table(chosen)
-                limit = len(table) if st.checkbox("Show all", key=f"all_{rid}_{i}") else scout.MORE_RETURNS + 1
-                st.dataframe(table.head(limit), hide_index=True, width="stretch")
+                rows_key = f"rows_{rid}_{i}"
+                shown = st.session_state.get(rows_key, RETURNS_SHOWN)
+                st.dataframe(table.head(shown), hide_index=True, width="stretch")
+                if shown < len(table):
+                    b1, b2, _ = st.columns([1, 1, 2])
+                    if b1.button(f"Show {min(5, len(table) - shown)} more", key=f"more_{rid}_{i}"):
+                        st.session_state[rows_key] = shown + 5
+                        st.rerun()
+                    if b2.button(f"Show all {len(table)}", key=f"allr_{rid}_{i}"):
+                        st.session_state[rows_key] = len(table)
+                        st.rerun()
+                st.caption(f"Showing {min(shown, len(table))} of {len(table)} return options")
                 if not scout.round_trip_checked(result, chosen) and any(
                         scout._id(f) == scout._id(chosen) for f in result["rt_out"]):
                     if st.button(f"Check round-trip ticket prices for {clock(chosen['depart'])}",
