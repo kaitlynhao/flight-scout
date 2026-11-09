@@ -102,7 +102,9 @@ def sync_watchlist(change):
 
 
 # ---------- results memory: reuse a trip's results for up to an hour (even after a page reload) ----------
-CACHE_DIR = os.path.join(HERE, ".results_cache")   # stays on this laptop (not uploaded to GitHub)
+# Stays on this laptop: not uploaded to GitHub, and ".nosync" keeps iCloud from syncing it.
+# (Tests point FLIGHT_SCOUT_CACHE_DIR somewhere else so they never touch your real saved results.)
+CACHE_DIR = os.getenv("FLIGHT_SCOUT_CACHE_DIR") or os.path.join(HERE, ".results_cache.nosync")
 CACHE_MINUTES = 60
 
 
@@ -121,8 +123,8 @@ def cache_save(t, result, saved_at=None):
         os.makedirs(CACHE_DIR, exist_ok=True)
         with open(os.path.join(CACHE_DIR, trip_key(t) + ".pkl"), "wb") as fh:
             pickle.dump({"saved_at": saved_at or _time.time(), "trip": t, "result": result}, fh)
-    except Exception:
-        pass  # remembering results is a bonus; never break a search over it
+    except Exception as e:  # remembering results is a bonus; never break a search over it
+        print(f"Couldn't save results for later: {e}")
 
 
 def cache_load(t):
@@ -332,11 +334,14 @@ def load_tracked(w):
     if cached:
         show_result(t, cached)
         s.notice = ("info", f"Showing your {label} results from {age_text(cached['saved_at'])}.")
+        s.wl_flash = ("success", f"Opened {label}: results from {age_text(cached['saved_at'])}.")
     else:
         for k in ("result", "searched_trip"):
             s.pop(k, None)
         s.notice = ("info", f"Loaded {label}. No results from the last hour, so press **Search flights** "
                             "for fresh prices.")
+        s.wl_flash = ("warning", f"Opened {label}. No results from the last hour yet: press **Search flights** "
+                                 "(your trip and preferences are filled in).")
 
 # ---------- sidebar: tracked trips ----------
 with st.sidebar:

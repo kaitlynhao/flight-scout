@@ -7,3 +7,4 @@ __pycache__/
 .DS_Store
 .claude/
 .results_cache/
+.results_cache.nosync/
