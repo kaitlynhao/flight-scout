@@ -30,18 +30,6 @@
         "stops_importance": 3,
         "allow_separate": true
       }
-    },
-    {
-      "id": "sync-test",
-      "active": false,
-      "trip": {
-        "origin": "AAA",
-        "destination": "BBB",
-        "depart_date": "2026-12-01"
-      },
-      "prefs": {
-        "target_price": 1
-      }
     }
   ]
 }
