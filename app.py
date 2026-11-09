@@ -14,6 +14,7 @@ from datetime import date, time, timedelta
 import pandas as pd
 import streamlit as st
 
+import github_sync
 import scout
 from scoring import DEFAULT_PREFS, PRIORITY_PRESETS, category_points
 from usage import BudgetError
@@ -64,6 +65,11 @@ def leg(f):
 
 
 def load_watchlist():
+    if github_sync.enabled():  # online app: always read the latest list from GitHub
+        try:
+            return github_sync.load()
+        except Exception:
+            pass  # GitHub unreachable: fall back to the copy that came with the app
     try:
         with open(WATCHLIST) as fh:
             return json.load(fh)
@@ -79,6 +85,9 @@ def save_watchlist(data):
 def sync_watchlist(change):
     """Upload the tracked-trips list to GitHub, where the automatic checks read it.
     Returns (worked, message). If it fails (no internet etc.), the trip stays saved on this laptop."""
+    if github_sync.enabled():  # online app: no git there, so save through GitHub's web API
+        with open(WATCHLIST) as fh:
+            return github_sync.save(json.load(fh), change)
     import subprocess
 
     def git(*args):
