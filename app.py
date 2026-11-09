@@ -3,8 +3,11 @@
 Search a trip right now, see every option scored for YOU (with reasons), and track trips
 for the twice-daily phone reports and urgent alerts.
 """
+import hashlib
 import json
 import os
+import pickle
+import time as _time
 import uuid
 from datetime import date, time, timedelta
 
@@ -98,6 +101,72 @@ def sync_watchlist(change):
         return False, "Saved on this laptop, but couldn't reach GitHub."
 
 
+# ---------- results memory: reuse a trip's results for up to an hour (even after a page reload) ----------
+CACHE_DIR = os.path.join(HERE, ".results_cache")   # stays on this laptop (not uploaded to GitHub)
+CACHE_MINUTES = 60
+
+
+def trip_key(t):
+    """Same trip = same airports, dates, flexibility, passengers and cabin (preferences don't matter:
+    results are re-scored with your current preferences anyway)."""
+    rt = bool(t.get("return_date"))
+    parts = [t["origin"], t["destination"], t["depart_date"], t.get("return_date") or "",
+             int(t.get("depart_flex") or 0), int(t.get("return_flex") or 0) if rt else 0,
+             int(t.get("adults", 1)), t.get("cabin", "economy")]
+    return hashlib.sha1(json.dumps(parts).encode()).hexdigest()[:16]
+
+
+def cache_save(t, result, saved_at=None):
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        with open(os.path.join(CACHE_DIR, trip_key(t) + ".pkl"), "wb") as fh:
+            pickle.dump({"saved_at": saved_at or _time.time(), "trip": t, "result": result}, fh)
+    except Exception:
+        pass  # remembering results is a bonus; never break a search over it
+
+
+def cache_load(t):
+    """This trip's saved results if they're less than an hour old, else None."""
+    try:
+        with open(os.path.join(CACHE_DIR, trip_key(t) + ".pkl"), "rb") as fh:
+            data = pickle.load(fh)
+    except Exception:
+        return None
+    return data if _time.time() - data["saved_at"] < CACHE_MINUTES * 60 else None
+
+
+def age_text(saved_at):
+    mins = int((_time.time() - saved_at) // 60)
+    return "just now" if mins < 1 else f"{mins} minute{'s' if mins != 1 else ''} ago"
+
+
+def show_result(t, data):
+    s = st.session_state
+    s.result, s.result_saved_at, s.searched_trip = data["result"], data["saved_at"], t
+    s.result_id = uuid.uuid4().hex[:6]
+
+
+def run_search(t, prefs, force=False):
+    """Use this trip's results from the last hour if we have them; otherwise search for real."""
+    s = st.session_state
+    s.search_error = None
+    cached = None if force else cache_load(t)
+    if cached:
+        show_result(t, cached)
+        return
+    try:
+        result = scout.find_trips(t, prefs)
+    except BudgetError:
+        s.search_error = LIMIT_MESSAGE
+        return
+    except Exception as e:
+        s.search_error = f"Search failed: {e}"
+        return
+    now = _time.time()
+    cache_save(t, result, now)
+    show_result(t, {"result": result, "saved_at": now})
+
+
 def flash(worked, text):
     """Show a message after the page refreshes."""
     st.session_state.wl_flash = ("success" if worked else "warning", text)
@@ -120,7 +189,7 @@ DEFAULTS = {
     "p_separate": True, "p_great": 90,
     "t_type": "Round trip", "t_origin": "JFK", "t_dest": "LAX",
     "t_depart": date(2026, 12, 10), "t_return": date(2026, 12, 17), "t_adults": 1,
-    "t_dflex": 0, "t_rflex": 0,
+    "t_dflex": 0, "t_rflex": 0, "t_cabin": "economy",
 }
 for k, v in DEFAULTS.items():
     st.session_state.setdefault(k, v)
@@ -232,6 +301,43 @@ def current_prefs(round_trip):
 # Shown when the (behind-the-scenes) monthly search limit is reached - no numbers for the user.
 LIMIT_MESSAGE = "Flight Scout can't search right now. Please try again later."
 
+
+def load_tracked(w):
+    """Clicking a tracked trip: fill in its trip + preferences, and show its results from the last hour."""
+    s, t, p = st.session_state, w["trip"], {**DEFAULT_PREFS, **w["prefs"]}
+    s.t_type = "Round trip" if t.get("return_date") else "One-way"
+    s.t_origin, s.t_dest = t["origin"], t["destination"]
+    s.t_depart = max(date.fromisoformat(t["depart_date"]), date.today())
+    if t.get("return_date"):
+        s.t_return = max(date.fromisoformat(t["return_date"]), s.t_depart)
+    s.t_dflex, s.t_rflex = int(t.get("depart_flex") or 0), int(t.get("return_flex") or 0)
+    s.t_adults, s.t_cabin = int(t.get("adults", 1)), t.get("cabin", "economy")
+
+    s.p_max_price, s.p_price_leeway, s.p_target_price = int(p["max_price"]), int(p["price_leeway"]), int(p["target_price"])
+    s.p_max_hours, s.p_time_leeway = float(p["max_hours"]), int(p["time_leeway_min"])
+    s.p_stops = next(k for k, v in STOPS.items() if v == p["max_stops"])
+    windows = [p.get("outbound_window"), p.get("return_window")]
+    s.p_use_windows = any(windows)
+    if windows[0]:
+        s.p_out_window = tuple(_hhmm(x) for x in windows[0])
+    if windows[1]:
+        s.p_back_window = tuple(_hhmm(x) for x in windows[1])
+    s.p_window_leeway = int(p["window_leeway_min"])
+    s.p_price_imp, s.p_time_imp, s.p_stops_imp = p["price_importance"], p["time_importance"], p["stops_importance"]
+    sliders_changed()  # picks the matching "What matters most?" preset, if any
+    s.p_separate, s.p_great = bool(p["allow_separate"]), int(p["great_score"])
+
+    cached = cache_load(t)
+    label = f"{t['origin']} {'⇄' if t.get('return_date') else '→'} {t['destination']}"
+    if cached:
+        show_result(t, cached)
+        s.notice = ("info", f"Showing your {label} results from {age_text(cached['saved_at'])}.")
+    else:
+        for k in ("result", "searched_trip"):
+            s.pop(k, None)
+        s.notice = ("info", f"Loaded {label}. No results from the last hour, so press **Search flights** "
+                            "for fresh prices.")
+
 # ---------- sidebar: tracked trips ----------
 with st.sidebar:
     st.subheader("Tracked trips")
@@ -244,10 +350,15 @@ with st.sidebar:
     for w in wl["trips"]:
         t = w["trip"]
         arrow = "⇄" if t.get("return_date") else "→"
+        nice = lambda d: date.fromisoformat(d).strftime("%b %-d")
+        dates = nice(t["depart_date"]) + (f"–{nice(t['return_date'])}" if t.get("return_date") else "")
         c1, c2 = st.columns([4, 1])
-        c1.markdown(f"**{t['origin']} {arrow} {t['destination']}**  \n{t['depart_date']}"
-                    + (f" – {t['return_date']}" if t.get("return_date") else "")
-                    + f"  \nTarget ${w['prefs']['target_price']}")
+        c1.button(f"{t['origin']} {arrow} {t['destination']} · {dates}", key=f"open_{w['id']}",
+                  on_click=load_tracked, args=(w,), width="stretch",
+                  help="Open this trip with its preferences (and its results from the last hour)")
+        cached = cache_load(t)
+        c1.caption(f"Target ${w['prefs']['target_price']}"
+                   + (f" · 🕒 results from {age_text(cached['saved_at'])}" if cached else ""))
         if c2.button("✕", key=f"rm_{w['id']}", help="Stop tracking"):
             wl["trips"] = [x for x in wl["trips"] if x["id"] != w["id"]]
             save_watchlist(wl)
@@ -282,7 +393,7 @@ else:
     ret = None
 c1, c2 = st.columns(2)
 adults = c1.number_input("Passengers", 1, 9, key="t_adults")
-cabin = c2.selectbox("Cabin", ["economy", "premium economy", "business", "first"])
+cabin = c2.selectbox("Cabin", ["economy", "premium economy", "business", "first"], key="t_cabin")
 
 st.subheader("2. What you like")
 tab_words, tab_custom = st.tabs(["✍️ Describe it", "🎛️ Set it myself"])
@@ -358,18 +469,13 @@ trip = {"depart_flex": st.session_state.t_dflex, "return_flex": st.session_state
 # ---------- search ----------
 st.subheader("3. Search")
 ok = len(origin) == 3 and len(destination) == 3 and origin != destination
-if st.button("🔎 Search flights", type="primary", disabled=not ok, use_container_width=True):
-    st.session_state.search_error = None
+if st.button("🔎 Search flights", type="primary", disabled=not ok, width="stretch"):
+    st.session_state.notice = None
     with st.spinner("Searching Google Flights and scoring every option..."):
-        try:
-            st.session_state.result = scout.find_trips(trip, prefs)
-            st.session_state.result_id = uuid.uuid4().hex[:6]
-            st.session_state.searched_trip = trip
-        except BudgetError:
-            st.session_state.search_error = LIMIT_MESSAGE
-        except Exception as e:
-            st.session_state.search_error = f"Search failed: {e}"
+        run_search(trip, prefs)
     st.rerun()
+if st.session_state.get("notice"):
+    st.info(st.session_state.notice[1])
 if st.session_state.get("search_error"):
     st.error(st.session_state.search_error)
 
@@ -388,9 +494,16 @@ st.divider()
 arrow = "⇄" if t.get("return_date") else "→"
 st.subheader(f"{t['origin']} {arrow} {t['destination']}")
 c1, c2 = st.columns([3, 1])
+c1.caption(f"🕒 Prices from {age_text(st.session_state.get('result_saved_at', _time.time()))}")
+if c2.button("🔄 Refresh prices", width="stretch", help="Get the latest prices for this trip"):
+    st.session_state.notice = None
+    with st.spinner("Getting the latest prices..."):
+        run_search(t, current_prefs(result["round_trip"]), force=True)
+    st.rerun()
+c1, c2 = st.columns([3, 1])
 c1.caption(f"{len(result['trips'])} options fit your limits · {len(result['hidden'])} hidden (beyond your leniency) · "
            "change any setting above and results update instantly")
-if c2.button("📌 Track this trip", use_container_width=True):
+if c2.button("📌 Track this trip", width="stretch"):
     wl = load_watchlist()
     wl["trips"].append({"id": f"{t['origin']}-{t['destination']}-{uuid.uuid4().hex[:6]}".lower(),
                         "active": True, "trip": t, "prefs": result["prefs"]})
@@ -449,13 +562,14 @@ for i, card in enumerate(cards, 1):
             with st.expander(f"More returns for the {clock(chosen['depart'])} flight"):
                 table = returns_table(chosen)
                 limit = len(table) if st.checkbox("Show all", key=f"all_{rid}_{i}") else scout.MORE_RETURNS + 1
-                st.dataframe(table.head(limit), hide_index=True, use_container_width=True)
+                st.dataframe(table.head(limit), hide_index=True, width="stretch")
                 if not scout.round_trip_checked(result, chosen) and any(
                         scout._id(f) == scout._id(chosen) for f in result["rt_out"]):
                     if st.button(f"Check round-trip ticket prices for {clock(chosen['depart'])}",
                                  key=f"chk_{rid}_{i}"):
                         try:
                             scout.check_round_trip_prices(result, chosen)
+                            cache_save(t, result, st.session_state.get("result_saved_at"))  # remember it too
                             st.session_state.pop(f"chk_err_{rid}_{i}", None)
                         except BudgetError:
                             st.session_state[f"chk_err_{rid}_{i}"] = LIMIT_MESSAGE
