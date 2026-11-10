@@ -1,6 +1,6 @@
 """Checks every trip on the watchlist, then sends the report and/or urgent alerts to your phone.
 
-GitHub Actions runs this every 3 hours from 6 AM to midnight (Eastern).
+Runs every 3 hours from 6 AM to midnight (Eastern): cron-job.org starts it on GitHub Actions.
     python run_checks.py            -> auto: report at 9 AM and 6 PM, alerts at every check
     python run_checks.py --report   -> force a report now (for demos)
 

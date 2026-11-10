@@ -1,15 +1,18 @@
 # Flight Scout's automatic checks. Runs on GitHub's computers, so your laptop can be off.
 #
-# To PAUSE it (save searches): GitHub repo -> Actions -> "Flight Scout checks" -> "..." -> Disable workflow.
+# MAIN TIMER: cron-job.org starts this at 6a 9a 12p 3p 6p 9p 12a Eastern (it presses "Run workflow"
+#             for you through GitHub's API). It's on time, unlike GitHub's own scheduler.
+# BACKUP:     GitHub's own schedule below. It only does a check if the main timer hasn't run for
+#             almost 3 hours (so it costs no extra searches), and never between 1 and 6 AM.
+#
+# To PAUSE it (save searches): GitHub repo -> Actions -> "Flight Scout checks" -> "..." -> Disable workflow
+#                              (and pause the job on cron-job.org).
 # To RUN IT NOW (demo):        GitHub repo -> Actions -> "Flight Scout checks" -> "Run workflow".
 name: Flight Scout checks
 
 on:
   schedule:
-    # Every 3 hours, 6 AM to midnight Eastern: 6a 9a 12p 3p 6p 9p 12a.
-    # GitHub uses UTC. These times are for Eastern STANDARD time (Nov-Mar, UTC-5);
-    # during daylight time (Mar-Nov) every check runs 1 hour later in Eastern time.
-    # GitHub may start scheduled runs a few minutes late.
+    # Backup only. GitHub uses UTC; these are 6a 9a 12p 3p 6p 9p 12a Eastern STANDARD time.
     - cron: "0 11,14,17,20,23,2,5 * * *"
   workflow_dispatch:
     inputs:
@@ -24,6 +27,7 @@ on:
 
 permissions:
   contents: write   # lets the run save its alert memory back to the repo
+  actions: read     # lets a backup run see when the main timer last ran
 
 concurrency: flight-scout   # never run two checks at the same time
 
@@ -32,20 +36,39 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: Backup run - skip if not needed
+        id: gate
+        if: ${{ github.event_name == 'schedule' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          hour=$(TZ=America/New_York date +%H)
+          last=$(gh run list -R "$GITHUB_REPOSITORY" --workflow checks.yml --event workflow_dispatch -L 1 --json createdAt -q '.[0].createdAt')
+          echo "Eastern hour: $hour · main timer last ran: ${last:-never}"
+          if [ $((10#$hour)) -ge 1 ] && [ $((10#$hour)) -lt 6 ]; then
+            echo "Quiet hours - skipping."; echo "skip=true" >> "$GITHUB_OUTPUT"
+          elif [ -n "$last" ] && [ $(( $(date +%s) - $(date -d "$last" +%s) )) -lt 10200 ]; then
+            echo "Main timer ran in the last 2h50m - skipping."; echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@v4
+        if: ${{ steps.gate.outputs.skip != 'true' }}
 
       - uses: actions/setup-python@v5
+        if: ${{ steps.gate.outputs.skip != 'true' }}
         with:
           python-version: "3.12"
 
       - name: Install libraries
+        if: ${{ steps.gate.outputs.skip != 'true' }}
         run: pip install -r requirements-checks.txt
 
       - name: Forget past alerts
-        if: ${{ inputs.reset_alerts }}
+        if: ${{ inputs.reset_alerts && steps.gate.outputs.skip != 'true' }}
         run: rm -f alert_state.json
 
       - name: Check prices and notify
+        if: ${{ steps.gate.outputs.skip != 'true' }}
         env:
           SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}   # stored in GitHub Secrets, never in the code
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
@@ -53,6 +76,7 @@ jobs:
         run: python run_checks.py ${{ inputs.report && '--report' || '' }}
 
       - name: Save alert memory
+        if: ${{ steps.gate.outputs.skip != 'true' }}
         run: |
           git config user.name "flight-scout-bot"
           git config user.email "flight-scout-bot@users.noreply.github.com"
